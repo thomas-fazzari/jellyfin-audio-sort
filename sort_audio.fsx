@@ -162,8 +162,8 @@ let planMoves ffprobe root inbox =
         Directory.EnumerateFiles(inbox, "*", SearchOption.AllDirectories)
         |> Seq.filter (Path.GetExtension >> audioExtensions.Contains)
         |> Seq.sort
-        |> Seq.map (planFile ffprobe root)
         |> Seq.toArray
+        |> Array.Parallel.map (planFile ffprobe root)
 
     let duplicateDestinations =
         initialResults
