@@ -81,18 +81,18 @@ withTemporaryRoot (fun root ->
         failwith $"Unexpected output: {output}")
 
 withTemporaryRoot (fun root ->
-    createTaggedFlac root "one/track.flac" "Test Artist" "Test Album" |> ignore
-    createTaggedFlac root "two/track.flac" "Test Artist" "Test Album" |> ignore
+    let sources =
+        [| createTaggedFlac root "one/track.flac" "Test Artist" "Test Album"
+           createTaggedFlac root "two/TRACK.flac" "test artist" "test album"
+           createTaggedFlac root "three/track.flac" "Test Artist" "Test Album" |]
+
     let output = runSorter root
 
-    if
-        not (File.Exists(Path.Combine(root, ".inbox", "one", "track.flac")))
-        || not (File.Exists(Path.Combine(root, ".inbox", "two", "track.flac")))
-    then
+    if sources |> Array.exists (File.Exists >> not) then
         failwith "Duplicate plan moved a source file"
 
     if
-        not (output.Contains("Moved: 0. Skipped: 2."))
+        not (output.Contains("Moved: 0. Skipped: 3."))
         || not (output.Contains("duplicate destination in plan"))
     then
         failwith $"Duplicate destinations were not rejected: {output}")
@@ -124,4 +124,60 @@ withTemporaryRoot (fun root ->
     then
         failwith $"Broken audio did not become a SKIP: {output}")
 
-Console.WriteLine "PASS move, duplicate-plan, path-safety, and broken-file tests"
+withTemporaryRoot (fun root ->
+    let first = createTaggedFlac root "00.flac" "Test Artist" "Test Album"
+
+    for index in 31..-1..1 do
+        File.Copy(first, Path.Combine(root, ".inbox", $"{index:D2}.flac"))
+
+    let sources = Directory.GetFiles(Path.Combine(root, ".inbox")) |> Array.sort
+    let existing = Path.Combine(root, "Test Artist", "Test Album", "00.flac")
+    Directory.CreateDirectory(Path.GetDirectoryName existing) |> ignore
+    File.WriteAllText(existing, "existing destination")
+
+    let expectedMoves action =
+        sources[1..]
+        |> Array.map (fun source ->
+            let name = Path.GetFileName source
+            let destination = Path.Combine("Test Artist", "Test Album", name)
+            $"{action} {name} -> {destination}")
+
+    let preview =
+        run "dotnet" [ "fsi"; script; "--"; "--root"; root; "--ffprobe"; ffprobe ]
+
+    let previewMoves =
+        preview.Split(Environment.NewLine)
+        |> Array.filter (fun line -> line.StartsWith("WOULD MOVE "))
+
+    if previewMoves <> expectedMoves "WOULD MOVE" then
+        failwith $"Preview did not preserve source order: {preview}"
+
+    if sources |> Array.exists (File.Exists >> not) then
+        failwith "Preview moved a source file"
+
+    let output = runSorter root
+
+    let actualMoves =
+        output.Split(Environment.NewLine)
+        |> Array.filter (fun line -> line.StartsWith("MOVE "))
+
+    if actualMoves <> expectedMoves "MOVE" then
+        failwith $"Apply did not preserve preview order: {output}"
+
+    for source in sources[1..] do
+        let destination =
+            Path.Combine(root, "Test Artist", "Test Album", Path.GetFileName source)
+
+        if File.Exists source || not (File.Exists destination) then
+            failwith $"Batch move failed for {source}"
+
+    if not (File.Exists first) || File.ReadAllText(existing) <> "existing destination" then
+        failwith "Existing destination was overwritten or its source was moved"
+
+    if
+        not (preview.Contains("Ready to move: 31. Skipped: 1."))
+        || not (output.Contains("Moved: 31. Skipped: 1."))
+    then
+        failwith $"Unexpected batch counts: {preview}{output}")
+
+Console.WriteLine "PASS move, duplicate-plan, path-safety, broken-file, and ordered-batch tests"

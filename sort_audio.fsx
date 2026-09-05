@@ -165,37 +165,25 @@ let planMoves ffprobe root inbox =
         |> Seq.toArray
         |> Array.Parallel.map (planFile ffprobe root)
 
-    let duplicateDestinations =
-        initialResults
-        |> Array.choose (function
-            | Ok move -> Some move.Destination
-            | Error _ -> None)
-        |> Array.countBy _.ToUpperInvariant()
-        |> Array.choose (function
-            | destination, count when count > 1 -> Some destination
-            | _ -> None)
-        |> Set.ofArray
+    let destinations = HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    let duplicateDestinations = HashSet<string>(StringComparer.OrdinalIgnoreCase)
 
-    let results =
-        initialResults
-        |> Array.map (function
-            | Ok move when duplicateDestinations.Contains(move.Destination.ToUpperInvariant()) ->
-                Error $"{Path.GetFileName move.Source}: duplicate destination in plan"
-            | result -> result)
+    for result in initialResults do
+        match result with
+        | Ok move when not (destinations.Add move.Destination) -> duplicateDestinations.Add move.Destination |> ignore
+        | _ -> ()
 
-    let moves =
-        results
-        |> Array.choose (function
-            | Ok move -> Some move
-            | Error _ -> None)
+    let moves = ResizeArray<Move>()
+    let skipped = ResizeArray<string>()
 
-    let skipped =
-        results
-        |> Array.choose (function
-            | Error message -> Some message
-            | Ok _ -> None)
+    for result in initialResults do
+        match result with
+        | Ok move when duplicateDestinations.Contains move.Destination ->
+            skipped.Add $"{Path.GetFileName move.Source}: duplicate destination in plan"
+        | Ok move -> moves.Add move
+        | Error message -> skipped.Add message
 
-    moves, skipped
+    moves.ToArray(), skipped.ToArray()
 
 let run args =
     let options = parseArgs args
@@ -222,13 +210,17 @@ let run args =
 
     let moves, skipped = planMoves options.Ffprobe root inbox
     let action = if options.Apply then "MOVE" else "WOULD MOVE"
+    let createdDirectories = HashSet<string>(StringComparer.Ordinal)
 
     for move in moves do
         Console.WriteLine $"{action} {Path.GetFileName move.Source} -> {Path.GetRelativePath(root, move.Destination)}"
 
         if options.Apply then
             let directory = Path.GetDirectoryName move.Destination
-            Directory.CreateDirectory directory |> ignore
+
+            if createdDirectories.Add directory then
+                Directory.CreateDirectory directory |> ignore
+
             File.Move(move.Source, move.Destination)
 
     for message in skipped do
