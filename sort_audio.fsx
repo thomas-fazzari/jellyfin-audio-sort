@@ -100,7 +100,7 @@ let readTags ffprobe file =
     [ "-v"
       "error"
       "-show_entries"
-      "format_tags=artist,album,album_artist"
+      "format_tags=artist,album,album_artist:stream_tags=artist,album,album_artist"
       "-of"
       "json"
       file ]
@@ -116,17 +116,34 @@ let readTags ffprobe file =
 
     use document = JsonDocument.Parse output
     let mutable format = Unchecked.defaultof<JsonElement>
-    let mutable tags = Unchecked.defaultof<JsonElement>
+    let mutable formatTags = Unchecked.defaultof<JsonElement>
+    let mutable streams = Unchecked.defaultof<JsonElement>
 
-    if
-        document.RootElement.TryGetProperty("format", &format)
-        && format.TryGetProperty("tags", &tags)
-    then
-        tags.EnumerateObject()
-        |> Seq.map (fun property -> property.Name.ToLowerInvariant(), property.Value.GetString())
-        |> Map.ofSeq
-    else
-        Map.empty
+    let streamTagsSeq =
+        if document.RootElement.TryGetProperty("streams", &streams) then
+            streams.EnumerateArray()
+            |> Seq.choose (fun stream ->
+                let mutable sTags = Unchecked.defaultof<JsonElement>
+                if stream.TryGetProperty("tags", &sTags) then
+                    Some (sTags.EnumerateObject() |> Seq.map (fun p -> p.Name.ToLowerInvariant(), p.Value.GetString()))
+                else
+                    None)
+            |> Seq.concat
+        else
+            Seq.empty
+
+    let formatTagsSeq =
+        if
+            document.RootElement.TryGetProperty("format", &format)
+            && format.TryGetProperty("tags", &formatTags)
+        then
+            formatTags.EnumerateObject()
+            |> Seq.map (fun property -> property.Name.ToLowerInvariant(), property.Value.GetString())
+        else
+            Seq.empty
+
+    Seq.append streamTagsSeq formatTagsSeq
+    |> Map.ofSeq
 
 let tryTag name tags =
     Map.tryFind name tags
